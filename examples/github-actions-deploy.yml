@@ -1,0 +1,53 @@
+# Example: report a production deployment to dora-gamify from GitHub Actions.
+# Copy the "Report deployment" step into your own deploy workflow, after the deploy step.
+#
+# The AWS role needs the policy from the Terraform output `producer_policy_arn`,
+# and a trust policy for GitHub's OIDC provider.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needed to find the first commit of the change
+
+      - name: Deploy
+        run: echo "your deploy commands here"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: always()
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/dora-events-producer
+          aws-region: eu-west-1
+
+      - uses: actions/setup-python@v5
+        if: always()
+        with:
+          python-version: "3.12"
+
+      - name: Report deployment
+        if: always() # report failed deployments too
+        run: |
+          pip install --quiet boto3
+          # Lead time starts at the oldest commit in this push
+          FIRST_COMMIT_TIME=$(git log --format=%cI "${{ github.event.before }}..${{ github.sha }}" 2>/dev/null | tail -1 || true)
+          if [ -z "$FIRST_COMMIT_TIME" ]; then FIRST_COMMIT_TIME=$(git log -1 --format=%cI); fi
+          OUTCOME=success
+          if [ "${{ job.status }}" != "success" ]; then OUTCOME=failure; fi
+          python scripts/emit_event.py deployment \
+            --stream dora-gamify-events \
+            --team payments \
+            --service checkout \
+            --commit-time "$FIRST_COMMIT_TIME" \
+            --outcome "$OUTCOME"
